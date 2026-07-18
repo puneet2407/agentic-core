@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>agentic-core · console</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2129; --border: #30363d;
+    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --green: #3fb950;
+    --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: grid; grid-template-columns: 1fr 320px; gap: 0; min-height: 100vh;
+  }
+  main { padding: 28px 32px; max-width: 860px; }
+  aside { background: var(--panel); border-left: 1px solid var(--border); padding: 24px 20px; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  h1 .dot { color: var(--green); }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 24px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 20px 0 10px; }
+
+  textarea {
+    width: 100%; min-height: 88px; resize: vertical; padding: 12px 14px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; font: inherit; outline: none;
+  }
+  textarea:focus { border-color: var(--accent); }
+  .row { display: flex; gap: 10px; margin-top: 10px; align-items: center; }
+  button {
+    background: var(--accent); color: #0d1117; font-weight: 600; border: 0;
+    padding: 9px 20px; border-radius: 8px; cursor: pointer; font-size: 14px;
+  }
+  button:disabled { opacity: .45; cursor: default; }
+  button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--border); font-weight: 400; }
+  .hint { color: var(--dim); font-size: 12px; }
+
+  .status-line { margin: 22px 0 10px; display: flex; align-items: center; gap: 10px; }
+  .badge {
+    font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px;
+    border: 1px solid var(--border); color: var(--dim); text-transform: uppercase; letter-spacing: .05em;
+  }
+  .badge.planning, .badge.running { color: var(--yellow); border-color: var(--yellow); }
+  .badge.completed { color: var(--green); border-color: var(--green); }
+  .badge.failed, .badge.rejected { color: var(--red); border-color: var(--red); }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .8s linear infinite; display: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .elapsed { color: var(--dim); font-size: 12px; }
+
+  .step {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    margin-bottom: 8px; overflow: hidden;
+  }
+  .step-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; }
+  .step-head:hover { background: var(--panel2); }
+  .step-id { font-family: ui-monospace, monospace; font-size: 12px; color: var(--dim); min-width: 26px; }
+  .agent-chip {
+    font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600;
+    background: var(--panel2); color: var(--purple); border: 1px solid var(--border);
+  }
+  .step-desc { flex: 1; font-size: 13px; }
+  .step-state { font-size: 12px; }
+  .step-state.pending { color: var(--dim); }
+  .step-state.running { color: var(--yellow); }
+  .step-state.completed { color: var(--green); }
+  .step-state.failed { color: var(--red); }
+  .step-body {
+    display: none; padding: 12px 14px; border-top: 1px solid var(--border);
+    background: var(--panel2); white-space: pre-wrap; font-size: 13px; color: var(--text);
+    max-height: 300px; overflow: auto;
+  }
+  .step.open .step-body { display: block; }
+
+  .result {
+    background: var(--panel); border: 1px solid var(--green); border-radius: 8px;
+    padding: 16px 18px; white-space: pre-wrap; font-size: 14px; margin-top: 6px; display: none;
+  }
+  .result.error { border-color: var(--red); color: var(--red); }
+
+  .hist-item {
+    padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
+    font-size: 12px; border: 1px solid transparent;
+  }
+  .hist-item:hover { background: var(--panel2); border-color: var(--border); }
+  .hist-goal { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-meta { color: var(--dim); font-size: 11px; display: flex; gap: 8px; }
+  .hist-meta .s-completed { color: var(--green); }
+  .hist-meta .s-failed, .hist-meta .s-rejected { color: var(--red); }
+
+  .metric { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
+  .metric b { color: var(--text); font-weight: 600; }
+  .metric span { color: var(--dim); }
+  .cat { font-size: 12px; color: var(--dim); padding: 2px 0; }
+  .cat b { color: var(--purple); font-weight: 600; }
+  .empty { color: var(--dim); font-size: 12px; font-style: italic; }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .examples button { font-size: 12px; padding: 5px 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="dot">●</span> agentic-core</h1>
+  <div class="sub">goal-driven · multi-agent · orchestrated</div>
+
+  <textarea id="goal" placeholder="Describe a goal… e.g. Compare REST vs GraphQL for a fintech API and recommend one"></textarea>
+  <div class="row">
+    <button id="run">Run goal</button>
+    <div class="spinner" id="spin"></div>
+    <span class="elapsed" id="elapsed"></span>
+    <span class="hint" id="hint">⌘/Ctrl+Enter to run</span>
+  </div>
+  <div class="examples" id="examples">
+    <button class="ghost">What is (12345 * 678) / 9? Use the calculator tool, then explain briefly.</button>
+    <button class="ghost">Compare monorepo vs polyrepo for a 5-person startup and recommend one.</button>
+    <button class="ghost">Fetch https://api.github.com/repos/vercel/next.js and summarize the repo stats.</button>
+  </div>
+
+  <div class="status-line" id="statusLine" style="display:none">
+    <span class="badge" id="badge">planning</span>
+    <span class="elapsed" id="runId"></span>
+  </div>
+  <div id="steps"></div>
+  <div class="result" id="result"></div>
+</main>
+
+<aside>
+  <h2>Metrics</h2>
+  <div id="metrics"><div class="empty">loading…</div></div>
+
+  <h2>Agents & Tools</h2>
+  <div id="catalog"><div class="empty">loading…</div></div>
+
+  <h2>Recent runs</h2>
+  <div id="history"><div class="empty">no runs yet</div></div>
+</aside>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let pollTimer = null, startTime = null, elapsedTimer = null;
+
+// ---------- run a goal ----------
+async function runGoal() {
+  const goal = $("goal").value.trim();
+  if (!goal) return;
+  $("run").disabled = true;
+  $("spin").style.display = "block";
+  $("result").style.display = "none";
+  $("steps").innerHTML = "";
+  $("statusLine").style.display = "flex";
+  setBadge("planning");
+  startTime = Date.now();
+  tickElapsed();
+  elapsedTimer = setInterval(tickElapsed, 1000);
+
+  try {
+    const res = await fetch("/tasks/async", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal }),
+    });
+    const { runId } = await res.json();
+    if (!runId) throw new Error("Server did not return a runId");
+    $("runId").textContent = runId.slice(0, 8);
+    poll(runId);
+  } catch (err) {
+    showResult("Failed to start run: " + err, true);
+    finishUi();
+  }
+}
+
+function poll(runId) {
+  pollTimer = setInterval(async () => {
+    try {
+      const run = await (await fetch("/tasks/" + runId)).json();
+      render(run);
+      if (["completed", "failed", "rejected"].includes(run.status)) {
+        clearInterval(pollTimer);
+        finishUi();
+        refreshSidebar();
+      }
+    } catch { /* transient poll error — keep going */ }
+  }, 2000);
+}
+
+function render(run) {
+  setBadge(run.status);
+  if (run.plan) {
+    for (const s of run.plan.steps) {
+      let el = document.getElementById("step-" + s.id);
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "step"; el.id = "step-" + s.id;
+        el.innerHTML =
+          '<div class="step-head" onclick="this.parentNode.classList.toggle(\'open\')">' +
+          '<span class="step-id">' + esc(s.id) + '</span>' +
+          '<span class="agent-chip">' + esc(s.agent) + '</span>' +
+          '<span class="step-desc">' + esc(s.description) + '</span>' +
+          '<span class="step-state"></span></div><div class="step-body"></div>';
+        $("steps").appendChild(el);
+      }
+      const state = el.querySelector(".step-state");
+      state.textContent = icon(s.status) + " " + s.status + (s.attempts > 1 ? " (attempt " + s.attempts + ")" : "");
+      state.className = "step-state " + s.status;
+      const body = el.querySelector(".step-body");
+      if (s.output) body.textContent = s.output;
+      else if (s.error) body.textContent = "ERROR: " + s.error;
+    }
+  }
+  if (run.status === "completed") showResult(run.result, false);
+  if (run.status === "failed" || run.status === "rejected") showResult(run.error, true);
+}
+
+function icon(s) {
+  return { pending: "○", running: "◐", completed: "✓", failed: "✗", skipped: "–" }[s] || "";
+}
+function setBadge(status) { const b = $("badge"); b.textContent = status; b.className = "badge " + status; }
+function showResult(text, isError) {
+  const r = $("result");
+  r.textContent = text || "(empty)";
+  r.className = "result" + (isError ? " error" : "");
+  r.style.display = "block";
+}
+function finishUi() {
+  $("run").disabled = false;
+  $("spin").style.display = "none";
+  clearInterval(elapsedTimer);
+}
+function tickElapsed() {
+  $("elapsed").textContent = Math.round((Date.now() - startTime) / 1000) + "s";
+}
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// ---------- sidebar ----------
+async function refreshSidebar() {
+  try {
+    const m = await (await fetch("/metrics")).json();
+    $("metrics").innerHTML = [
+      ["Runs (ok / failed)", m.runsCompleted + " / " + m.runsFailed],
+      ["LLM calls", m.llmCalls],
+      ["Tokens in / out", m.inputTokens + " / " + m.outputTokens],
+      ["Tool calls (fails)", m.toolCalls + " (" + m.toolFailures + ")"],
+      ["Avg LLM latency", Math.round(m.avgLlmLatencyMs) + " ms"],
+    ].map(([k, v]) => '<div class="metric"><span>' + k + "</span><b>" + v + "</b></div>").join("");
+  } catch {}
+  try {
+    const c = await (await fetch("/catalog")).json();
+    $("catalog").innerHTML =
+      c.agents.map((a) => { const [n, ...d] = a.replace(/^- /, "").split(":"); return '<div class="cat"><b>' + esc(n) + "</b>:" + esc(d.join(":")) + "</div>"; }).join("") +
+      '<div class="cat" style="margin-top:6px">' + c.tools.map((t) => "<b>" + esc(t.name) + "</b>").join(" · ") + "</div>";
+  } catch {}
+  try {
+    const t = await (await fetch("/tasks")).json();
+    const all = [...t.active, ...t.recent];
+    $("history").innerHTML = all.length
+      ? all.slice(0, 15).map((r) =>
+          '<div class="hist-item" onclick="loadRun(\'' + r.id + '\')">' +
+          '<div class="hist-goal">' + esc(r.goal) + "</div>" +
+          '<div class="hist-meta"><span class="s-' + r.status + '">' + r.status + "</span><span>" +
+          new Date(r.startedAt).toLocaleTimeString() + "</span></div></div>").join("")
+      : '<div class="empty">no runs yet</div>';
+  } catch {}
+}
+
+async function loadRun(id) {
+  const run = await (await fetch("/tasks/" + id)).json();
+  $("goal").value = run.goal;
+  $("steps").innerHTML = "";
+  $("statusLine").style.display = "flex";
+  $("runId").textContent = id.slice(0, 8);
+  $("result").style.display = "none";
+  render(run);
+  if (["planning", "running"].includes(run.status)) { clearInterval(pollTimer); poll(id); }
+}
+
+// ---------- wiring ----------
+$("run").addEventListener("click", runGoal);
+$("goal").addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") runGoal();
+});
+$("examples").addEventListener("click", (e) => {
+  if (e.target.tagName === "BUTTON") { $("goal").value = e.target.textContent; $("goal").focus(); }
+});
+refreshSidebar();
+setInterval(refreshSidebar, 15000);
+</script>
+</body>
+</html>
