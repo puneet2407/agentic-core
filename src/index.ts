@@ -19,6 +19,7 @@ export type { LLMProvider } from "./foundation/providers/anthropic.js";
 export { shortTermMemory } from "./memory/short-term.js";
 export { longTermMemory, InMemoryVectorStore } from "./memory/long-term.js";
 export { episodicStore } from "./memory/episodic.js";
+export { seedMemory } from "./memory/seed.js";
 export { events } from "./observability/events.js";
 export { getMetrics } from "./observability/metrics.js";
 export { logger } from "./observability/logger.js";

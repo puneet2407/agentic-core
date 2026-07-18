@@ -144,6 +144,23 @@
 const $ = (id) => document.getElementById(id);
 let pollTimer = null, startTime = null, elapsedTimer = null;
 
+// ---------- auth-aware fetch (used for every API call) ----------
+async function api(path, opts = {}) {
+  const token = localStorage.getItem("agentic_token");
+  const headers = { ...(opts.headers || {}) };
+  if (token) headers["Authorization"] = "Bearer " + token;
+  let res = await fetch(path, { ...opts, headers });
+  if (res.status === 401) {
+    const entered = prompt("This server requires an API token (API_TOKEN in its .env):");
+    if (entered) {
+      localStorage.setItem("agentic_token", entered.trim());
+      headers["Authorization"] = "Bearer " + entered.trim();
+      res = await fetch(path, { ...opts, headers });
+    }
+  }
+  return res;
+}
+
 // ---------- run a goal ----------
 async function runGoal() {
   const goal = $("goal").value.trim();
@@ -159,7 +176,7 @@ async function runGoal() {
   elapsedTimer = setInterval(tickElapsed, 1000);
 
   try {
-    const res = await fetch("/tasks/async", {
+    const res = await api("/tasks/async", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ goal }),
@@ -177,7 +194,7 @@ async function runGoal() {
 function poll(runId) {
   pollTimer = setInterval(async () => {
     try {
-      const run = await (await fetch("/tasks/" + runId)).json();
+      const run = await (await api("/tasks/" + runId)).json();
       render(run);
       if (["completed", "failed", "rejected"].includes(run.status)) {
         clearInterval(pollTimer);
@@ -241,7 +258,7 @@ function esc(s) {
 // ---------- sidebar ----------
 async function refreshSidebar() {
   try {
-    const m = await (await fetch("/metrics")).json();
+    const m = await (await api("/metrics")).json();
     $("metrics").innerHTML = [
       ["Runs (ok / failed)", m.runsCompleted + " / " + m.runsFailed],
       ["LLM calls", m.llmCalls],
@@ -251,13 +268,13 @@ async function refreshSidebar() {
     ].map(([k, v]) => '<div class="metric"><span>' + k + "</span><b>" + v + "</b></div>").join("");
   } catch {}
   try {
-    const c = await (await fetch("/catalog")).json();
+    const c = await (await api("/catalog")).json();
     $("catalog").innerHTML =
       c.agents.map((a) => { const [n, ...d] = a.replace(/^- /, "").split(":"); return '<div class="cat"><b>' + esc(n) + "</b>:" + esc(d.join(":")) + "</div>"; }).join("") +
       '<div class="cat" style="margin-top:6px">' + c.tools.map((t) => "<b>" + esc(t.name) + "</b>").join(" · ") + "</div>";
   } catch {}
   try {
-    const t = await (await fetch("/tasks")).json();
+    const t = await (await api("/tasks")).json();
     const all = [...t.active, ...t.recent];
     $("history").innerHTML = all.length
       ? all.slice(0, 15).map((r) =>
@@ -270,7 +287,7 @@ async function refreshSidebar() {
 }
 
 async function loadRun(id) {
-  const run = await (await fetch("/tasks/" + id)).json();
+  const run = await (await api("/tasks/" + id)).json();
   $("goal").value = run.goal;
   $("steps").innerHTML = "";
   $("statusLine").style.display = "flex";

@@ -4,7 +4,10 @@
  * Requires ANTHROPIC_API_KEY in .env.
  */
 import { orchestrator } from "./orchestration/orchestrator.js";
+import { seedMemory } from "./memory/seed.js";
 import "./tools/builtin.js";
+
+await seedMemory();
 
 const goal =
   process.argv.slice(2).join(" ") ||

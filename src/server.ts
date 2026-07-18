@@ -8,6 +8,7 @@ import { toolRegistry } from "./tools/registry.js";
 import { agentRegistry } from "./agents/registry.js";
 import { config } from "./config/index.js";
 import { logger } from "./observability/logger.js";
+import { seedMemory } from "./memory/seed.js";
 import "./tools/builtin.js";
 
 /**
@@ -44,6 +45,17 @@ const server = createServer(async (req, res) => {
 
   try {
     if (req.method === "OPTIONS") return json(res, 204, {});
+
+    // Auth (Layer 8): when API_TOKEN is set, every route except the console
+    // shell and /health requires "Authorization: Bearer <token>".
+    const apiToken = process.env.API_TOKEN;
+    const openPaths = ["/", "/console", "/health"];
+    if (apiToken && !openPaths.includes(path)) {
+      const header = req.headers.authorization ?? "";
+      if (header !== `Bearer ${apiToken}`) {
+        return json(res, 401, { error: "Unauthorized — send Authorization: Bearer <API_TOKEN>" });
+      }
+    }
 
     // Web console UI
     if (req.method === "GET" && (path === "/" || path === "/console")) {
@@ -101,6 +113,11 @@ const server = createServer(async (req, res) => {
   }
 });
 
+await seedMemory();
+
 server.listen(config.server.port, () => {
-  logger.info("agentic-core listening", { port: config.server.port });
+  logger.info("agentic-core listening", {
+    port: config.server.port,
+    auth: process.env.API_TOKEN ? "bearer-token" : "OPEN (set API_TOKEN before sharing)",
+  });
 });

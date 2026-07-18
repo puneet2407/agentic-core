@@ -287,6 +287,13 @@ export const defaultGuardrails = new GuardrailPipeline([
 ]);
 ```
 
+**API auth:** set `API_TOKEN=<long-random-string>` in `.env` and every route except the console shell and `/health` requires `Authorization: Bearer <token>` (401 otherwise). The web console prompts for the token on first 401 and remembers it in the browser. Do this before letting teammates hit your instance:
+
+```bash
+# .env
+API_TOKEN=$(openssl rand -hex 24)   # or any long random string
+```
+
 Blocked runs finish with `status: "rejected"` and the reason in `error` — they never reach the planner (input) or the user (output). A `guardrail.blocked` event fires either way, so rejections are visible in logs and metrics.
 
 **LLM-as-judge guardrail:** for nuanced policies, call `modelGateway.complete()` inside a guardrail with the fast model and a yes/no rubric. Costs one extra call per run; use for high-stakes surfaces.
@@ -303,18 +310,15 @@ Three stores, three jobs:
 - **Long-term** (`longTermMemory`) — cross-run facts. The orchestrator auto-saves a summary of every completed run; the data agent auto-recalls relevant memories into its context.
 - **Episodic** (`episodicStore`) — full `TaskRun` history, powering `GET /tasks` and audits.
 
-Seed long-term memory with domain knowledge at startup:
+Seed long-term memory with domain knowledge via the seed file — loaded automatically at every boot (memory is in-process, so seeds live on disk):
 
-```ts
-import { longTermMemory } from "agentic-core";
-
-await longTermMemory.remember(
-  "Our production stack: Next.js 15 on Vercel, Postgres on Neon, Stripe for billing.",
-  { kind: "org-context" },
-);
+```bash
+cp memory-seed.example.md memory-seed.md
+# edit it: one fact per "---"-separated block — service map, conventions, gotchas
+npm run dev   # log line "memory seeded" confirms the load
 ```
 
-Now any data-agent step whose goal mentions your stack pulls this in automatically.
+Now any step whose goal mentions your stack pulls the relevant facts in automatically. You can also seed programmatically with `longTermMemory.remember(fact, metadata)`.
 
 **Upgrading to a real vector DB:** implement the 2-method `VectorStore` interface with pgvector/Pinecone and inject it:
 
