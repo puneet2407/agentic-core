@@ -9,6 +9,7 @@ import { episodicStore } from "../memory/episodic.js";
  */
 export class StateManager {
   private active = new Map<string, TaskRun>();
+  private cancelRequests = new Set<string>();
 
   createRun(goal: string): TaskRun {
     const run: TaskRun = {
@@ -43,11 +44,23 @@ export class StateManager {
     });
     episodicStore.save({ ...run });
     this.active.delete(runId);
+    this.cancelRequests.delete(runId);
     return run;
   }
 
   listActive(): TaskRun[] {
     return [...this.active.values()];
+  }
+
+  /** Request cooperative cancellation; honored at the next step boundary. */
+  requestCancel(runId: string): boolean {
+    if (!this.active.has(runId)) return false;
+    this.cancelRequests.add(runId);
+    return true;
+  }
+
+  isCancelRequested(runId: string): boolean {
+    return this.cancelRequests.has(runId);
   }
 }
 

@@ -37,11 +37,36 @@ Rules:
 - The FINAL step should usually be a "communication" step that synthesizes results for the user, unless the goal is trivially simple.
 - Respond with ONLY a JSON object: {"steps":[{"id":"s1","description":"...","agent":"research","dependsOn":[]}]}`;
 
-export async function createPlan(goal: string, runId: string): Promise<Plan> {
+export interface PlanRevision {
+  /** What went wrong in the previous plan (failed step + error). */
+  failure: string;
+  /** Outputs of steps that already completed — the new plan should not redo them. */
+  completedWork: string;
+}
+
+export async function createPlan(
+  goal: string,
+  runId: string,
+  revision?: PlanRevision,
+): Promise<Plan> {
   const system = SYSTEM.replace("{AGENTS}", agentRegistry.catalogText()).replace(
     "{MAX}",
     String(config.limits.maxStepsPerTask),
   );
+
+  const userMessage = revision
+    ? [
+        `Goal: ${goal}`,
+        `\nA previous plan FAILED. Produce a REVISED plan that reaches the goal a different way.`,
+        `# What failed\n${revision.failure}`,
+        revision.completedWork
+          ? `# Work already completed (do NOT redo; a step may reference it as given context)\n${revision.completedWork}`
+          : "",
+        `Avoid the approach that failed — choose different steps, agents, or tools.`,
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+    : `Goal: ${goal}`;
 
   const plan = await withRetry(
     async () => {
@@ -49,7 +74,7 @@ export async function createPlan(goal: string, runId: string): Promise<Plan> {
         {
           model: config.models.planner,
           system,
-          messages: [{ role: "user", content: `Goal: ${goal}` }],
+          messages: [{ role: "user", content: userMessage }],
           maxTokens: 2048,
         },
         { runId },
@@ -86,7 +111,8 @@ function extractJson(text: string): unknown {
   }
 }
 
-function validateDag(steps: { id: string; dependsOn: string[] }[]): void {
+/** Exported for tests. Throws on duplicate ids, unknown deps, or cycles. */
+export function validateDag(steps: { id: string; dependsOn: string[] }[]): void {
   const ids = new Set(steps.map((s) => s.id));
   if (ids.size !== steps.length) throw new AgentError("Plan has duplicate step ids", true);
   for (const s of steps) {

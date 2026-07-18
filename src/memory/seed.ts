@@ -1,11 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { longTermMemory } from "./long-term.js";
+import { contentHashId, longTermMemory } from "./long-term.js";
 import { logger } from "../observability/logger.js";
 
 /**
  * Memory seeding — loads durable org/workspace knowledge into long-term memory
- * at process start (the in-memory vector store resets on restart, so seeds
- * live in a file and are re-loaded every boot).
+ * at process start. Seeds use content-hash ids, so re-loading on every boot
+ * is idempotent (no duplicates in the persistent store).
  *
  * File format (default ./memory-seed.md, override with MEMORY_SEED_FILE):
  * facts separated by lines containing only "---". Each fact becomes one
@@ -27,7 +27,11 @@ export async function seedMemory(): Promise<number> {
     .filter((s) => s.length > 10 && !s.startsWith("#example"));
 
   for (const fact of facts) {
-    await longTermMemory.remember(fact, { kind: "seed", source: file });
+    await longTermMemory.remember(
+      fact,
+      { kind: "seed", source: file },
+      { provenance: "seed", id: contentHashId(fact) },
+    );
   }
   logger.info("memory seeded", { file, facts: facts.length });
   return facts.length;

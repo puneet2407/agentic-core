@@ -1,6 +1,7 @@
-import type { ToolDefinition } from "../types/index.js";
+import type { AgentKind, ToolDefinition } from "../types/index.js";
 import { events } from "../observability/events.js";
 import { AgentError } from "../reliability/errors.js";
+import { isToolAllowed } from "./policy.js";
 
 /**
  * Tool Registry (Layer 4 — Tools & Integrations).
@@ -22,16 +23,31 @@ export class ToolRegistry {
     return [...this.tools.values()].map(({ name, description }) => ({ name, description }));
   }
 
-  /** Prompt-friendly catalog for agent system prompts. */
-  catalogText(): string {
+  /**
+   * Prompt-friendly catalog for agent system prompts.
+   * When `agent` is given, only tools that agent is authorized to call are listed.
+   */
+  catalogText(agent?: AgentKind): string {
     return this.list()
+      .filter((t) => isToolAllowed(agent, t.name))
       .map((t) => `- ${t.name}: ${t.description}`)
       .join("\n");
   }
 
-  async execute(name: string, input: unknown, runId = "unknown"): Promise<string> {
+  async execute(
+    name: string,
+    input: unknown,
+    runId = "unknown",
+    opts: { agent?: AgentKind } = {},
+  ): Promise<string> {
     const tool = this.tools.get(name);
     if (!tool) throw new AgentError(`Unknown tool: ${name}`, false);
+    if (!isToolAllowed(opts.agent, name)) {
+      throw new AgentError(
+        `Policy: agent "${opts.agent}" is not authorized to call tool "${name}"`,
+        false,
+      );
+    }
 
     const parsed = (tool.inputSchema as { safeParse(i: unknown): { success: boolean; data?: unknown; error?: unknown } }).safeParse(input);
     if (!parsed.success) {

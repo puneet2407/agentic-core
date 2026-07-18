@@ -1,31 +1,41 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { timingSafeEqual } from "node:crypto";
 import { orchestrator } from "./orchestration/orchestrator.js";
 import { stateManager } from "./orchestration/state-manager.js";
 import { episodicStore } from "./memory/episodic.js";
 import { getMetrics } from "./observability/metrics.js";
+import { readRunEvents } from "./observability/audit.js";
 import { toolRegistry } from "./tools/registry.js";
 import { agentRegistry } from "./agents/registry.js";
 import { config } from "./config/index.js";
 import { logger } from "./observability/logger.js";
 import { seedMemory } from "./memory/seed.js";
+import { rateLimiter } from "./server/rate-limit.js";
 import "./tools/builtin.js";
+import "./observability/audit.js";
 
 /**
  * HTTP API (Layer 1 — User/Client Layer interface).
  * Zero-dependency node:http server; your Next.js app calls these endpoints.
  *
- *   POST /tasks          {"goal": "..."}      → run a goal (sync; returns full TaskRun)
- *   POST /tasks/async    {"goal": "..."}      → returns {runId} immediately; poll status
- *   GET  /tasks/:id                            → run status/result
- *   GET  /tasks                                → recent runs
- *   GET  /health, /metrics, /catalog           → ops & discovery
+ *   POST /tasks               {"goal": "...", "approvePlan"?: true} → run a goal (sync)
+ *   POST /tasks/async         same body → returns {runId} immediately; poll status
+ *   POST /tasks/:id/approve                → approve a run awaiting plan approval
+ *   POST /tasks/:id/cancel                 → cancel a run (honored at step boundary)
+ *   GET  /tasks/:id                        → run status/result
+ *   GET  /tasks/:id/events                 → full audit trail for a run
+ *   GET  /tasks                            → recent runs
+ *   GET  /health, /metrics, /catalog       → ops & discovery
+ *
+ * Security (Layer 8): optional bearer auth (API_TOKEN), per-IP rate limiting
+ * (RATE_LIMIT_RPM), configurable CORS origin (CORS_ORIGIN).
  */
 
 function json(res: import("node:http").ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": config.server.corsOrigin,
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   });
@@ -34,9 +44,21 @@ function json(res: import("node:http").ServerResponse, status: number, body: unk
 
 async function readBody(req: import("node:http").IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > 1_000_000) throw new Error("Request body exceeds 1MB");
+    chunks.push(chunk as Buffer);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   return raw ? JSON.parse(raw) : {};
+}
+
+/** Constant-time token comparison — avoids timing side channels. */
+function tokenMatches(header: string, token: string): boolean {
+  const expected = Buffer.from(`Bearer ${token}`);
+  const provided = Buffer.from(header);
+  return expected.length === provided.length && timingSafeEqual(expected, provided);
 }
 
 const server = createServer(async (req, res) => {
@@ -46,13 +68,19 @@ const server = createServer(async (req, res) => {
   try {
     if (req.method === "OPTIONS") return json(res, 204, {});
 
+    // Rate limiting (Layer 8) — per client IP.
+    const clientIp = req.socket.remoteAddress ?? "unknown";
+    if (!rateLimiter.allow(clientIp)) {
+      return json(res, 429, { error: "Rate limit exceeded — slow down" });
+    }
+
     // Auth (Layer 8): when API_TOKEN is set, every route except the console
     // shell and /health requires "Authorization: Bearer <token>".
     const apiToken = process.env.API_TOKEN;
     const openPaths = ["/", "/console", "/health"];
     if (apiToken && !openPaths.includes(path)) {
       const header = req.headers.authorization ?? "";
-      if (header !== `Bearer ${apiToken}`) {
+      if (!tokenMatches(header, apiToken)) {
         return json(res, 401, { error: "Unauthorized — send Authorization: Bearer <API_TOKEN>" });
       }
     }
@@ -77,22 +105,41 @@ const server = createServer(async (req, res) => {
       });
     }
     if (req.method === "POST" && (path === "/tasks" || path === "/tasks/async")) {
-      const body = (await readBody(req)) as { goal?: string };
+      const body = (await readBody(req)) as { goal?: string; approvePlan?: boolean };
       if (!body.goal || typeof body.goal !== "string") {
         return json(res, 400, { error: "Body must be {\"goal\": \"...\"}" });
       }
-      if (path === "/tasks/async") {
-        // Fire and poll — suitable for long-running goals.
+      const opts = { approvePlan: body.approvePlan === true };
+      if (path === "/tasks/async" || opts.approvePlan) {
+        // Fire and poll — required for approval flows, suitable for long goals.
         const before = new Set(stateManager.listActive().map((r) => r.id));
-        const promise = orchestrator.run(body.goal);
+        const promise = orchestrator.run(body.goal, opts);
         promise.catch(() => {}); // result surfaced via GET /tasks/:id
         // orchestrator.run registers the run synchronously; yield once to find it.
         await new Promise((r) => setImmediate(r));
         const run = stateManager.listActive().find((r) => !before.has(r.id));
         return json(res, 202, { runId: run?.id ?? null, status: run?.status ?? "running" });
       }
-      const run = await orchestrator.run(body.goal);
+      const run = await orchestrator.run(body.goal, opts);
       return json(res, run.status === "completed" ? 200 : 422, run);
+    }
+    if (req.method === "POST" && /^\/tasks\/[^/]+\/approve$/.test(path)) {
+      const id = path.split("/")[2]!;
+      const ok = orchestrator.approve(id);
+      return ok
+        ? json(res, 200, { runId: id, approved: true })
+        : json(res, 409, { error: "Run is not awaiting approval" });
+    }
+    if (req.method === "POST" && /^\/tasks\/[^/]+\/cancel$/.test(path)) {
+      const id = path.split("/")[2]!;
+      const ok = orchestrator.cancel(id);
+      return ok
+        ? json(res, 202, { runId: id, cancelling: true })
+        : json(res, 404, { error: "No active run with that id" });
+    }
+    if (req.method === "GET" && /^\/tasks\/[^/]+\/events$/.test(path)) {
+      const id = path.split("/")[2]!;
+      return json(res, 200, { runId: id, events: readRunEvents(id) });
     }
     if (req.method === "GET" && path.startsWith("/tasks/")) {
       const id = path.slice("/tasks/".length);
@@ -119,5 +166,8 @@ server.listen(config.server.port, () => {
   logger.info("agentic-core listening", {
     port: config.server.port,
     auth: process.env.API_TOKEN ? "bearer-token" : "OPEN (set API_TOKEN before sharing)",
+    rateLimitRpm: config.server.rateLimitRpm,
+    corsOrigin: config.server.corsOrigin,
+    dataDir: config.dataDir,
   });
 });

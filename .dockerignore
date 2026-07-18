@@ -1,0 +1,8 @@
+node_modules
+dist
+data
+.test-data
+.git
+.env
+*.md
+!memory-seed.example.md

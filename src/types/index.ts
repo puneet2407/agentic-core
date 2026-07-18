@@ -59,9 +59,11 @@ export interface Plan {
 
 export type RunStatus =
   | "planning"
+  | "awaiting_approval" // human-in-the-loop: plan created, waiting for approval
   | "running"
   | "completed"
   | "failed"
+  | "cancelled"
   | "rejected"; // blocked by guardrails
 
 export interface TaskRun {
@@ -130,6 +132,8 @@ export interface VectorStore {
 export interface GuardrailVerdict {
   allowed: boolean;
   reason?: string;
+  /** When set on an allowed verdict, this (e.g. redacted) text replaces the original. */
+  output?: string;
 }
 
 export interface Guardrail {
@@ -149,6 +153,11 @@ export type SystemEvent =
   | { type: "step.completed"; runId: string; stepId: string }
   | { type: "step.failed"; runId: string; stepId: string; error: string }
   | { type: "guardrail.blocked"; runId: string; reason: string }
+  | { type: "guardrail.redacted"; runId: string; guardrail: string; reason: string }
+  | { type: "plan.revised"; runId: string; replan: number; reason: string }
+  | { type: "run.cancelled"; runId: string; reason: string }
+  | { type: "run.awaiting_approval"; runId: string }
+  | { type: "run.approved"; runId: string }
   | { type: "llm.call"; runId: string; model: string; latencyMs: number; inputTokens: number; outputTokens: number }
   | { type: "tool.call"; runId: string; tool: string; ok: boolean; latencyMs: number };
 

@@ -31,6 +31,10 @@ yarn-error.log*
 # Testing
 coverage/
 .nyc_output/
+.test-data/
+
+# Durable runtime state (runs, memory, audit trail)
+data/
 
 # Misc
 .cache/

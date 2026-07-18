@@ -22,3 +22,19 @@ export class BudgetExceededError extends Error {
     this.name = "BudgetExceededError";
   }
 }
+
+/** Run was cancelled by the user (Layer 7 — Human-in-the-loop). */
+export class CancelledError extends Error {
+  constructor(message = "Run cancelled by user") {
+    super(message);
+    this.name = "CancelledError";
+  }
+}
+
+/** Run exceeded its wall-clock budget (config.limits.maxRunMs). */
+export class RunTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunTimeoutError";
+  }
+}
