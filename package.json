@@ -11,6 +11,7 @@
     "start": "node dist/server.js",
     "demo": "tsx src/demo.ts",
     "mcp": "node dist/mcp-server.js",
+    "doctor": "tsx src/doctor.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

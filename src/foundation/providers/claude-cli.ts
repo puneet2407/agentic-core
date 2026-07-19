@@ -5,23 +5,78 @@ import type { LLMRequest, LLMResponse } from "../../types/index.js";
 import type { LLMProvider } from "./anthropic.js";
 import { config } from "../../config/index.js";
 import { AgentError } from "../../reliability/errors.js";
+import { logger } from "../../observability/logger.js";
 
 /**
  * The CLI must behave as a PURE text-completion endpoint. Without this, the
- * `claude` subprocess is a full agent: it uses its own Bash/Read/Edit tools,
- * explores the server's working directory, and ignores our TOOL_CALL protocol
- * (symptom: agents describing THIS repo instead of doing their step).
- * Defense in depth: disallow all built-in tools AND run in an empty cwd.
+ * `claude` subprocess is a full agent: its own tools, the user's plugins and
+ * MCP connectors, and a Claude Code identity that makes it dismiss our
+ * TOOL_CALL protocol as fake (symptom: "those tools don't exist here").
+ *
+ * Per the CLI reference, the complete lockdown is:
+ *   --tools ""             disable ALL built-in tools (incl. future ones)
+ *   --disallowedTools "*"  belt-and-suspenders: remove every tool from context
+ *   --strict-mcp-config    (without --mcp-config) load ZERO MCP servers
+ *   --bare                 skip plugins, skills, hooks, CLAUDE.md, auto-memory
+ *   --no-session-persistence  don't pollute the user's session history
+ *   --system-prompt        REPLACE the Claude Code identity with ours
+ * Plus: run in an empty scratch cwd so there is nothing to discover anyway.
+ *
+ * COMPATIBILITY LADDER: not every installed CLI version supports every flag,
+ * and a rejected flag exits non-zero before any completion happens. The
+ * provider starts at the strictest level and automatically steps down to the
+ * strongest set the installed CLI accepts (sticky once found, logged once).
+ * Run `claude update` to get back to level 0.
  */
-const DISALLOWED_CLI_TOOLS = [
-  "Bash", "BashOutput", "KillShell", "Edit", "MultiEdit", "Write", "NotebookEdit",
-  "Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "Task", "TodoWrite",
-  // Harness/plugin surfaces — without these the model sees user-level skills,
-  // MCP connectors etc. and treats our TOOL_CALL protocol as fake.
-  "Skill", "SlashCommand", "ToolSearch", "ExitPlanMode", "EnterPlanMode",
-  "ListMcpResources", "ReadMcpResource", "ReportFindings", "ScheduleWakeup",
-  "mcp__*",
-].join(",");
+interface LockdownLevel {
+  flags: string[];
+  systemFlag: "--system-prompt" | "--append-system-prompt";
+}
+
+const LOCKDOWN_LADDER: LockdownLevel[] = [
+  {
+    // Default: no tools, no MCP servers, no session files, replaced identity.
+    //
+    // NOTE: --bare is deliberately NOT used. It looks ideal (skips plugins,
+    // skills, CLAUDE.md) but on Claude Code 2.1.214 it also skips credential
+    // discovery, so every call fails with "Not logged in" — verified by
+    // `npm run doctor`, which bisects each flag. The flags below achieve the
+    // isolation that matters (zero tools, zero MCP) and are confirmed working;
+    // the empty scratch cwd keeps project-level CLAUDE.md out of context.
+    flags: ["--tools", "", "--disallowedTools", "*", "--strict-mcp-config", "--no-session-persistence"],
+    systemFlag: "--system-prompt",
+  },
+  {
+    // Older CLIs: drop --tools and --no-session-persistence.
+    flags: ["--disallowedTools", "*", "--strict-mcp-config", "--no-session-persistence"],
+    systemFlag: "--system-prompt",
+  },
+  {
+    // No --tools; wildcard disallow still removes every tool from context.
+    flags: ["--disallowedTools", "*", "--strict-mcp-config"],
+    systemFlag: "--system-prompt",
+  },
+  {
+    // Known-good baseline on older CLIs (proven working earlier): explicit
+    // empty MCP config + appended (not replaced) system prompt.
+    flags: ["--disallowedTools", "*", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'],
+    systemFlag: "--append-system-prompt",
+  },
+];
+
+/**
+ * Heuristic: distinguishes "CLI rejected our flags" from transient/API failures.
+ * Includes "Not logged in": some isolation flags (notably --bare, which skips
+ * config auto-discovery) prevent the CLI from loading stored credentials, so an
+ * auth error at one ladder level can be resolved by a weaker level. If auth is
+ * genuinely broken, every level fails and the last error surfaces to the user.
+ */
+function isLikelyFlagIncompatibility(err: unknown): boolean {
+  if (!(err instanceof AgentError)) return false;
+  return /unknown option|unrecognized option|invalid (option|argument)|not logged in|please run \/login|exited \d+:\s*$/i.test(
+    err.message,
+  );
+}
 
 /**
  * ClaudeCliProvider — uses the Claude Code CLI (`claude -p`) instead of the API.
@@ -35,43 +90,69 @@ const DISALLOWED_CLI_TOOLS = [
  */
 export class ClaudeCliProvider implements LLMProvider {
   readonly name = "claude-cli";
+  /** Sticky index into LOCKDOWN_LADDER — strongest level this CLI accepts. */
+  private ladderLevel = 0;
 
   constructor(private readonly cliPath = process.env.CLAUDE_CLI_PATH ?? "claude") {}
 
   async complete(req: LLMRequest): Promise<LLMResponse> {
     const start = Date.now();
     const prompt = flattenMessages(req);
+    let lastErr: unknown;
 
-    const args = [
-      "-p", // print mode (non-interactive)
-      "--output-format", "json",
-      "--model", req.model ?? config.models.default,
-      "--disallowedTools", DISALLOWED_CLI_TOOLS,
-      // Do NOT load the user's MCP servers/connectors into this subprocess.
-      "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-    ];
-    if (req.system) args.push("--append-system-prompt", req.system);
-
-    const raw = await this.spawnCli(args, prompt);
-    const parsed = parseCliJson(raw);
-
-    return {
-      text: parsed.result,
-      model: req.model ?? config.models.default,
-      usage: parsed.usage,
-      stopReason: parsed.subtype === "success" ? "end_turn" : parsed.subtype,
-      latencyMs: Date.now() - start,
-    };
+    for (let lvl = this.ladderLevel; lvl < LOCKDOWN_LADDER.length; lvl++) {
+      const lock = LOCKDOWN_LADDER[lvl]!;
+      const args = [
+        "-p", // print mode (non-interactive)
+        "--output-format", "json",
+        "--model", req.model ?? config.models.default,
+        ...lock.flags,
+        lock.systemFlag, req.system ?? "You are a helpful assistant.",
+      ];
+      try {
+        const raw = await this.spawnCli(args, prompt);
+        const parsed = parseCliJson(raw);
+        if (lvl !== this.ladderLevel) {
+          logger.warn("claude CLI: settled on reduced lockdown level (run `claude update` for full isolation)", { level: lvl });
+        }
+        this.ladderLevel = lvl;
+        return {
+          text: parsed.result,
+          model: req.model ?? config.models.default,
+          usage: parsed.usage,
+          stopReason: parsed.subtype === "success" ? "end_turn" : parsed.subtype,
+          latencyMs: Date.now() - start,
+        };
+      } catch (err) {
+        lastErr = err;
+        if (!isLikelyFlagIncompatibility(err) || lvl === LOCKDOWN_LADDER.length - 1) throw err;
+        logger.warn("claude CLI rejected lockdown flags — trying reduced set", {
+          fromLevel: lvl,
+          error: String(err).slice(0, 300),
+        });
+      }
+    }
+    throw lastErr;
   }
 
   private spawnCli(args: string[], stdin: string): Promise<string> {
     // Empty scratch cwd: even if a tool slipped through, there is nothing to read.
     const scratch = resolve(join(config.dataDir, "cli-scratch"));
     mkdirSync(scratch, { recursive: true });
+    // Normalize the OAuth token: .env pastes often carry quotes/whitespace,
+    // which the CLI reads literally and rejects as "Not logged in".
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    const rawToken = env.CLAUDE_CODE_OAUTH_TOKEN;
+    if (rawToken !== undefined) {
+      const cleaned = rawToken.trim().replace(/^["']|["']$/g, "");
+      if (cleaned) env.CLAUDE_CODE_OAUTH_TOKEN = cleaned;
+      else delete env.CLAUDE_CODE_OAUTH_TOKEN; // empty var can mask a valid login
+    }
+
     return new Promise((resolvePromise, reject) => {
       const child = spawn(this.cliPath, args, {
         cwd: scratch,
-        env: { ...process.env },
+        env,
         stdio: ["pipe", "pipe", "pipe"],
       });
 
@@ -97,9 +178,14 @@ export class ClaudeCliProvider implements LLMProvider {
       child.on("close", (code) => {
         clearTimeout(timer);
         if (code !== 0) {
+          // Error text can land on either stream (flag errors often use stdout).
+          const detail = (stderr.trim() || stdout.trim()).slice(0, 500);
           // Rate-limit / transient errors are retryable; auth errors are not.
-          const retryable = !/login|auth|unauthorized/i.test(stderr);
-          reject(new AgentError(`claude CLI exited ${code}: ${stderr.slice(0, 500)}`, retryable));
+          const retryable = !/login|auth|unauthorized/i.test(detail);
+          const hint = /not logged in|please run \/login|please run `?claude\b/i.test(detail)
+            ? ` — the claude CLI subprocess is NOT authenticated. In a terminal run: claude  (sign in interactively once), then verify with: claude -p "say hi". Your login may have expired since the last successful run. For an unattended server, generate a token with \`claude setup-token\` and export it as CLAUDE_CODE_OAUTH_TOKEN, or switch to LLM_PROVIDER=anthropic with an ANTHROPIC_API_KEY.`
+            : "";
+          reject(new AgentError(`claude CLI exited ${code}: ${detail}${hint}`, retryable));
         } else {
           resolvePromise(stdout);
         }
