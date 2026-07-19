@@ -18,7 +18,7 @@ const planSchema = z.object({
       z.object({
         id: z.string().min(1),
         description: z.string().min(1),
-        agent: z.enum(["research", "reasoning", "action", "data", "communication"]),
+        agent: z.enum(["research", "reasoning", "action", "data", "code", "communication"]),
         dependsOn: z.array(z.string()).default([]),
       }),
     )

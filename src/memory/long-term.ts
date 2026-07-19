@@ -110,6 +110,15 @@ export class EmbeddingVectorStore implements VectorStore {
       .map((x) => x.r);
   }
 
+  /** Remove a record permanently (used by the code index for stale chunks). */
+  remove(id: string): void {
+    this.store.delete(id);
+  }
+
+  all(): MemoryRecord[] {
+    return this.store.all();
+  }
+
   /** Embed records persisted before the embedder was available (bounded batch). */
   private async backfill(embedder: Embedder, maxBatch = 256): Promise<void> {
     const missing = this.store.all().filter((r) => !r.embedding).slice(0, maxBatch);

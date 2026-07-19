@@ -37,6 +37,7 @@ export type AgentKind =
   | "reasoning"
   | "action"
   | "data"
+  | "code"
   | "communication";
 
 export interface TaskStep {

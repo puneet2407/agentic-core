@@ -153,6 +153,55 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    // --- Code-change proposals (human-in-the-loop write path) ---
+    if (path === "/proposals" || path.startsWith("/proposals/")) {
+      const { proposals } = await import("./workspace/proposals.js");
+      if (req.method === "GET" && path === "/proposals") {
+        const status = url.searchParams.get("status") as "proposed" | "applied" | "rejected" | null;
+        return json(res, 200, proposals().list(status ?? undefined));
+      }
+      const applyMatch = path.match(/^\/proposals\/([^/]+)\/apply$/);
+      if (req.method === "POST" && applyMatch) {
+        return json(res, 200, await proposals().apply(applyMatch[1]!));
+      }
+      const rejectMatch = path.match(/^\/proposals\/([^/]+)\/reject$/);
+      if (req.method === "POST" && rejectMatch) {
+        return json(res, 200, proposals().reject(rejectMatch[1]!));
+      }
+      const patchMatch = path.match(/^\/proposals\/([^/]+)\.patch$/);
+      if (req.method === "GET" && patchMatch) {
+        const { unifiedDiff } = await import("./workspace/proposals.js");
+        const p = proposals().get(patchMatch[1]!);
+        if (!p) return json(res, 404, { error: "Proposal not found" });
+        res.writeHead(200, { "Content-Type": "text/x-patch; charset=utf-8" });
+        return res.end(unifiedDiff(p.oldContent, p.newContent, p.path));
+      }
+      const getMatch = path.match(/^\/proposals\/([^/]+)$/);
+      if (req.method === "GET" && getMatch) {
+        const p = proposals().get(getMatch[1]!);
+        return p ? json(res, 200, p) : json(res, 404, { error: "Proposal not found" });
+      }
+    }
+
+    // --- Direct semantic search (used by the MCP adapter and curl) ---
+    if (req.method === "GET" && path === "/workspace/search") {
+      const q = url.searchParams.get("q");
+      if (!q) return json(res, 400, { error: "Missing query param: q" });
+      const { codeIndex } = await import("./workspace/code-index.js");
+      const results = await codeIndex().search(q, {
+        repo: url.searchParams.get("repo") ?? undefined,
+        topK: Math.min(15, parseInt(url.searchParams.get("topK") ?? "5", 10) || 5),
+      });
+      return json(res, 200, { query: q, results });
+    }
+
+    // --- Semantic code index ---
+    if (req.method === "POST" && path === "/workspace/index") {
+      const body = (await readBody(req)) as { repo?: string };
+      const { codeIndex } = await import("./workspace/code-index.js");
+      return json(res, 200, await codeIndex().indexRepo(body.repo));
+    }
+
     return json(res, 404, { error: `No route: ${req.method} ${path}` });
   } catch (err) {
     logger.error("request failed", { path, error: String(err) });

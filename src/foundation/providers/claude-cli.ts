@@ -1,8 +1,27 @@
 import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { LLMRequest, LLMResponse } from "../../types/index.js";
 import type { LLMProvider } from "./anthropic.js";
 import { config } from "../../config/index.js";
 import { AgentError } from "../../reliability/errors.js";
+
+/**
+ * The CLI must behave as a PURE text-completion endpoint. Without this, the
+ * `claude` subprocess is a full agent: it uses its own Bash/Read/Edit tools,
+ * explores the server's working directory, and ignores our TOOL_CALL protocol
+ * (symptom: agents describing THIS repo instead of doing their step).
+ * Defense in depth: disallow all built-in tools AND run in an empty cwd.
+ */
+const DISALLOWED_CLI_TOOLS = [
+  "Bash", "BashOutput", "KillShell", "Edit", "MultiEdit", "Write", "NotebookEdit",
+  "Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "Task", "TodoWrite",
+  // Harness/plugin surfaces — without these the model sees user-level skills,
+  // MCP connectors etc. and treats our TOOL_CALL protocol as fake.
+  "Skill", "SlashCommand", "ToolSearch", "ExitPlanMode", "EnterPlanMode",
+  "ListMcpResources", "ReadMcpResource", "ReportFindings", "ScheduleWakeup",
+  "mcp__*",
+].join(",");
 
 /**
  * ClaudeCliProvider — uses the Claude Code CLI (`claude -p`) instead of the API.
@@ -27,6 +46,9 @@ export class ClaudeCliProvider implements LLMProvider {
       "-p", // print mode (non-interactive)
       "--output-format", "json",
       "--model", req.model ?? config.models.default,
+      "--disallowedTools", DISALLOWED_CLI_TOOLS,
+      // Do NOT load the user's MCP servers/connectors into this subprocess.
+      "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
     ];
     if (req.system) args.push("--append-system-prompt", req.system);
 
@@ -43,8 +65,12 @@ export class ClaudeCliProvider implements LLMProvider {
   }
 
   private spawnCli(args: string[], stdin: string): Promise<string> {
-    return new Promise((resolve, reject) => {
+    // Empty scratch cwd: even if a tool slipped through, there is nothing to read.
+    const scratch = resolve(join(config.dataDir, "cli-scratch"));
+    mkdirSync(scratch, { recursive: true });
+    return new Promise((resolvePromise, reject) => {
       const child = spawn(this.cliPath, args, {
+        cwd: scratch,
         env: { ...process.env },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -75,7 +101,7 @@ export class ClaudeCliProvider implements LLMProvider {
           const retryable = !/login|auth|unauthorized/i.test(stderr);
           reject(new AgentError(`claude CLI exited ${code}: ${stderr.slice(0, 500)}`, retryable));
         } else {
-          resolve(stdout);
+          resolvePromise(stdout);
         }
       });
 

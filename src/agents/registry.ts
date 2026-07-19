@@ -1,6 +1,7 @@
 import type { Agent, AgentKind } from "../types/index.js";
 import {
   ActionAgent,
+  CodeAgent,
   CommunicationAgent,
   DataAgent,
   ReasoningAgent,
@@ -20,6 +21,7 @@ export class AgentRegistry {
     ["action", "reasoning"],
     ["research", "reasoning"],
     ["data", "reasoning"],
+    ["code", "reasoning"],
   ]);
 
   register(agent: Agent): void {
@@ -49,4 +51,5 @@ agentRegistry.register(new ResearchAgent());
 agentRegistry.register(new ReasoningAgent());
 agentRegistry.register(new ActionAgent());
 agentRegistry.register(new DataAgent());
+agentRegistry.register(new CodeAgent());
 agentRegistry.register(new CommunicationAgent());

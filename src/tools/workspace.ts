@@ -169,6 +169,56 @@ toolRegistry.register({
   },
 });
 
+// --- workspace_index: (re)build the semantic code index ---
+toolRegistry.register({
+  name: "workspace_index",
+  description:
+    "Build or refresh the semantic code index for one repo (or all repos). Run this once before using workspace_semantic_search, and again after big code changes. Incremental — only changed files are re-embedded.",
+  inputSchema: z.object({
+    repo: z.string().optional().describe("repo folder name; omit to index everything"),
+  }),
+  async execute({ repo }) {
+    const { codeIndex } = await import("../workspace/code-index.js");
+    const stats = await codeIndex().indexRepo(repo);
+    return `Indexed ${stats.filesIndexed} changed files (${stats.chunks} chunks), scanned ${stats.filesScanned}, removed ${stats.filesRemoved} deleted files.`;
+  },
+});
+
+// --- workspace_semantic_search: meaning-based code search ---
+toolRegistry.register({
+  name: "workspace_semantic_search",
+  description:
+    "Search the codebase by MEANING (semantic/embedding search), not literal text. Best for conceptual questions like 'where is retry logic handled', 'how do services authenticate', 'code that talks to the payment provider'. Use code_search instead for exact strings/identifiers. Requires workspace_index to have been run.",
+  inputSchema: z.object({
+    query: z.string().min(3).max(500),
+    repo: z.string().optional().describe("limit to this repo folder name"),
+    topK: z.number().int().min(1).max(15).default(5),
+  }),
+  async execute({ query, repo, topK }) {
+    const { codeIndex } = await import("../workspace/code-index.js");
+    return cap(await codeIndex().search(query, { repo, topK }));
+  },
+});
+
+// --- propose_code_change: SAFE write path (human approves via /proposals) ---
+toolRegistry.register({
+  name: "propose_code_change",
+  description:
+    "Propose a code change: provide the COMPLETE new content of one file (workspace-root-relative path). The change is NOT applied — it is recorded as a proposal with a diff for a human to review and apply via the /proposals API. Read the current file first (read_repo_file) and keep changes minimal and convention-consistent. Returns the proposal id and diff.",
+  inputSchema: z.object({
+    path: z.string().min(1).describe("e.g. 'auth-service/src/login.ts'"),
+    content: z.string().min(1).max(400_000).describe("full new file content"),
+    description: z.string().min(5).max(500).describe("what the change does and why"),
+  }),
+  async execute({ path, content, description }) {
+    const { proposals } = await import("../workspace/proposals.js");
+    const p = await proposals().propose({ path, content, description });
+    return cap(
+      `Proposal ${p.id} recorded for ${p.path} (NOT yet applied — awaiting human review at GET /proposals).\n\n${p.diff}`,
+    );
+  },
+});
+
 // --- git_recent: recent commit history for a repo ---
 toolRegistry.register({
   name: "git_recent",

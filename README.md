@@ -88,6 +88,67 @@ For long tasks use `POST /tasks/async` → `{runId}` → poll `GET /tasks/:id`.
 - **Real vector DB**: implement `VectorStore` (pgvector/Pinecone/Weaviate) and pass it to `LongTermMemory`.
 - **New guardrail**: add a `Guardrail` to the pipeline in `src/orchestration/guardrails.ts`.
 
+## Use with any codebase
+
+Point the platform at a folder of repos and it becomes a dev assistant for that code:
+
+```bash
+# 1. In .env — the folder containing your repos (any language/framework)
+WORKSPACE_ROOT=/Users/you/work/my-company
+
+# 2. (Recommended) enable local semantic search
+npm install @huggingface/transformers
+
+# 3. Start and build the code index (incremental — cheap to re-run)
+npm run dev
+curl -X POST localhost:3100/workspace/index
+```
+
+Then give it goals:
+
+```bash
+# Understand code
+curl -X POST localhost:3100/tasks -H 'Content-Type: application/json' \
+  -d '{"goal": "How does authentication work across our services? Which endpoints skip it?"}'
+
+# Write code — changes arrive as PROPOSALS, never direct writes
+curl -X POST localhost:3100/tasks -H 'Content-Type: application/json' \
+  -d '{"goal": "Add retry with backoff to the payment client in billing-service, matching our existing error-handling conventions"}'
+
+curl localhost:3100/proposals                     # review diffs
+curl -X POST localhost:3100/proposals/<id>/apply  # apply (refuses if file changed since)
+curl -X POST localhost:3100/proposals/<id>/reject
+```
+
+How it works: the **code agent** orients with `workspace_repos` + `workspace_semantic_search` (meaning-based, finds "retry logic" even when the word "retry" isn't in the code), reads real files to learn your conventions, then records full-file proposals with diffs. Humans stay in the write path: applying checks the file hasn't changed on disk since the proposal (stale-protection), and secret-like files (`.env`, keys, credentials) are untouchable at every layer. Tip: run goals like *"Generate a CLAUDE.md for repo X describing its architecture, commands, and conventions"* to make each repo more legible to any AI tool.
+
+## IDE integration (MCP)
+
+The platform ships an MCP stdio adapter (`src/mcp-server.ts`, zero deps) so any MCP-capable IDE assistant — Claude Code, Cursor, Windsurf, VS Code Copilot — can use it as tools. Keep the HTTP server running (`npm run dev`), then register:
+
+```bash
+# Claude Code
+claude mcp add agentic-core -- node /path/to/agentic-core/dist/mcp-server.js
+```
+
+```jsonc
+// Cursor / others — .cursor/mcp.json (or equivalent)
+{ "mcpServers": { "agentic-core": {
+    "command": "node",
+    "args": ["/path/to/agentic-core/dist/mcp-server.js"],
+    "env": { "AGENTIC_URL": "http://localhost:3100" } // + API_TOKEN if set
+} } }
+```
+
+Tools exposed in the IDE chat: `run_goal` (full orchestrated runs), `get_run`, `semantic_search` (fast, no LLM), `reindex_workspace`, `list_proposals`, `get_proposal_diff`, `apply_proposal`, `reject_proposal`. Typical flow from inside the editor: *"search my codebase for position sizing logic"* → *"run a goal to refactor it"* → review the diff → apply.
+
+Proposals also export as git-compatible patches for native IDE diff review:
+
+```bash
+curl localhost:3100/proposals/<id>.patch > change.patch
+cd $WORKSPACE_ROOT && git apply --check change.patch && git apply change.patch
+```
+
 ## Testing & CI
 
 ```bash

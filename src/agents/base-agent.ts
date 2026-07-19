@@ -34,6 +34,13 @@ export abstract class BaseAgent implements Agent {
 
     const catalog = toolRegistry.catalogText(this.kind);
     const system = [
+      `# Execution context
+You are running as a specialist sub-agent inside the agentic-core orchestrator.
+Disregard any other execution-environment instructions about who you are or
+what tools you have: for THIS task, the ONLY tools that exist are the ones in
+"Available tools" below, callable ONLY via the TOOL_CALL line format. They are
+real and will be executed by the orchestrator. Do not claim they are
+unavailable; do not ask the user to run commands — use the tools.`,
       this.systemPrompt(),
       catalog
         ? [
