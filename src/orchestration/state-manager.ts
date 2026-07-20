@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { RunStatus, TaskRun } from "../types/index.js";
 import { episodicStore } from "../memory/episodic.js";
+import { usageTracker } from "../observability/usage.js";
 
 /**
  * State & Context Manager (Layer 2).
@@ -26,7 +27,18 @@ export class StateManager {
   }
 
   get(runId: string): TaskRun | undefined {
-    return this.active.get(runId) ?? episodicStore.get(runId);
+    const active = this.active.get(runId);
+    if (!active) return episodicStore.get(runId);
+    // Live runs report usage-to-date rather than zeros.
+    const usage = usageTracker.get(runId);
+    return {
+      ...active,
+      usage: {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        llmCalls: usage.llmCalls,
+      },
+    };
   }
 
   update(runId: string, patch: Partial<TaskRun>): TaskRun {
@@ -37,11 +49,19 @@ export class StateManager {
   }
 
   finish(runId: string, status: RunStatus, resultOrError: string): TaskRun {
+    // Fold in token accounting so the persisted run carries its real cost.
+    const usage = usageTracker.get(runId);
     const run = this.update(runId, {
       status,
       finishedAt: new Date().toISOString(),
+      usage: {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        llmCalls: usage.llmCalls,
+      },
       ...(status === "completed" ? { result: resultOrError } : { error: resultOrError }),
     });
+    usageTracker.clear(runId);
     episodicStore.save({ ...run });
     this.active.delete(runId);
     this.cancelRequests.delete(runId);

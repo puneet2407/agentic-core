@@ -75,7 +75,8 @@ export class CodeAgent extends BaseAgent {
   kind: AgentKind = "code";
   description =
     "Explores the codebase (semantic + literal search, file reads, git history), explains code, and proposes code changes for human review. Use for any step that involves reading or writing code in the workspace.";
-  protected maxToolIterations = 14; // code work needs more explore steps
+  // Code work is read-heavy: orient → search → read several files → cross-check.
+  protected maxToolIterations = Math.max(30, config.limits.maxToolIterations);
 
   protected systemPrompt(): string {
     return `You are a Code Agent (senior software engineer) in a multi-agent system, working on the user's actual codebase.

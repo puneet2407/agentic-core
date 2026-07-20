@@ -88,14 +88,52 @@ function isLikelyFlagIncompatibility(err: unknown): boolean {
  *  - Subject to your plan's usage limits
  *  - Multi-turn conversations are flattened into a single transcript prompt
  */
+/**
+ * Concurrency gate. The orchestrator runs independent plan steps in parallel,
+ * and each LLM call here spawns a full `claude` process. Unbounded, that means
+ * N heavyweight processes at once, which trips subscription rate limits, opens
+ * the circuit breaker, and cascades into "Circuit is open — failing fast" on
+ * every remaining step. Queue instead: slower, but it finishes.
+ */
+class Semaphore {
+  private active = 0;
+  private queue: (() => void)[] = [];
+
+  constructor(private readonly limit: number) {}
+
+  async acquire(): Promise<() => void> {
+    if (this.active >= this.limit) {
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+    this.active++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active--;
+      this.queue.shift()?.();
+    };
+  }
+}
+
 export class ClaudeCliProvider implements LLMProvider {
   readonly name = "claude-cli";
   /** Sticky index into LOCKDOWN_LADDER — strongest level this CLI accepts. */
   private ladderLevel = 0;
+  private readonly gate = new Semaphore(config.limits.maxConcurrentCliCalls);
 
   constructor(private readonly cliPath = process.env.CLAUDE_CLI_PATH ?? "claude") {}
 
   async complete(req: LLMRequest): Promise<LLMResponse> {
+    const release = await this.gate.acquire();
+    try {
+      return await this.completeInner(req);
+    } finally {
+      release();
+    }
+  }
+
+  private async completeInner(req: LLMRequest): Promise<LLMResponse> {
     const start = Date.now();
     const prompt = flattenMessages(req);
     let lastErr: unknown;

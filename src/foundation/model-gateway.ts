@@ -1,4 +1,4 @@
-import type { LLMRequest, LLMResponse } from "../types/index.js";
+import type { AgentKind, LLMRequest, LLMResponse } from "../types/index.js";
 import type { LLMProvider } from "./providers/anthropic.js";
 import { AnthropicProvider } from "./providers/anthropic.js";
 import { ClaudeCliProvider } from "./providers/claude-cli.js";
@@ -30,12 +30,18 @@ export class ModelGateway {
 
   registerProvider(provider: LLMProvider): void {
     this.providers.set(provider.name, provider);
-    this.breakers.set(provider.name, new CircuitBreaker(`llm:${provider.name}`));
+    // Tolerant thresholds: a transient rate-limit burst during parallel steps
+    // shouldn't open the circuit and cascade-fail an entire run. Recovery is
+    // probed quickly (10s) so a run can continue rather than dying wholesale.
+    this.breakers.set(
+      provider.name,
+      new CircuitBreaker(`llm:${provider.name}`, config.limits.breakerThreshold, 10_000),
+    );
   }
 
   async complete(
     req: LLMRequest,
-    opts: { runId?: string; provider?: string } = {},
+    opts: { runId?: string; provider?: string; stepId?: string; agent?: AgentKind } = {},
   ): Promise<LLMResponse> {
     const name = opts.provider ?? this.defaultProvider;
     const provider = this.providers.get(name);
@@ -65,6 +71,8 @@ export class ModelGateway {
         latencyMs: res.latencyMs,
         inputTokens: res.usage.inputTokens,
         outputTokens: res.usage.outputTokens,
+        ...(opts.stepId ? { stepId: opts.stepId } : {}),
+        ...(opts.agent ? { agent: opts.agent } : {}),
       });
     }
     return res;

@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { config } from "./config/index.js";
 
@@ -42,6 +42,88 @@ console.log(`CLAUDE_CODE_OAUTH_TOKEN : ${mask(token)}`);
 console.log(`ANTHROPIC_API_KEY       : ${mask(apiKey)}`);
 console.log(`WORKSPACE_ROOT          : ${config.workspaceRoot || "(not set — workspace tools disabled)"}`);
 console.log(`DATA_DIR                : ${resolve(config.dataDir)}\n`);
+
+// ---------- Embeddings / semantic memory ----------
+console.log("--- Embeddings & memory ---");
+console.log(`EMBEDDINGS mode         : ${config.embeddings}`);
+console.log(`EMBEDDING_MODEL         : ${config.embeddingModel}`);
+
+interface Rec { id: string; content: string; embedding?: number[]; metadata?: Record<string, string> }
+
+function readJsonl(name: string): Rec[] {
+  const file = join(config.dataDir, `${name}.jsonl`);
+  if (!existsSync(file)) return [];
+  const live = new Map<string, Rec>();
+  for (const line of readFileSync(file, "utf8").split("\n").filter(Boolean)) {
+    try {
+      const r = JSON.parse(line) as Rec & { __deleted?: boolean };
+      if (r.__deleted) live.delete(r.id);
+      else live.set(r.id, r);
+    } catch { /* skip */ }
+  }
+  return [...live.values()];
+}
+
+function reportStore(label: string, name: string): Rec[] {
+  const recs = readJsonl(name);
+  const withEmb = recs.filter((r) => Array.isArray(r.embedding) && r.embedding.length > 0);
+  const dims = withEmb[0]?.embedding?.length;
+  if (recs.length === 0) {
+    console.log(`${label.padEnd(24)}: empty`);
+  } else {
+    const pct = Math.round((withEmb.length / recs.length) * 100);
+    console.log(
+      `${label.padEnd(24)}: ${recs.length} records, ${withEmb.length} embedded (${pct}%)${dims ? `, ${dims} dims` : ""}` +
+        (pct === 100 ? " ✓" : pct === 0 ? "  ← KEYWORD FALLBACK IN USE" : "  ← partial, will backfill on next recall"),
+    );
+  }
+  return recs;
+}
+
+reportStore("Code index chunks", "code-chunks");
+const mem = reportStore("Long-term memory", "memory");
+if (mem.length > 0) {
+  const byProv = new Map<string, number>();
+  for (const m of mem) {
+    const p = m.metadata?.["provenance"] ?? "(none)";
+    byProv.set(p, (byProv.get(p) ?? 0) + 1);
+  }
+  console.log(
+    `  memory provenance     : ${[...byProv].map(([p, n]) => `${p}=${n}`).join(", ")}` +
+      `   (seed=trusted, derived=fenced as untrusted on recall)`,
+  );
+}
+
+// Live semantic probe: proves the embedder loads AND that retrieval ranks by
+// meaning rather than shared keywords.
+if (config.embeddings === "local") {
+  try {
+    const { createTransformersEmbedder, cosineSim } = await import("./memory/embeddings.js");
+    const t0 = Date.now();
+    const embedder = await createTransformersEmbedder();
+    const [a, b, c] = await embedder.embed([
+      "retry the failed request with exponential backoff",
+      "attempt the call again after waiting longer each time", // same meaning, no shared words
+      "the chef prepared a delicious pasta dish", // unrelated
+    ]);
+    const near = cosineSim(a!, b!);
+    const far = cosineSim(a!, c!);
+    console.log(`Embedder load + 3 embeds: ${Date.now() - t0}ms`);
+    console.log(`  similar phrases       : ${near.toFixed(3)} (expect > 0.5)`);
+    console.log(`  unrelated phrases     : ${far.toFixed(3)} (expect < 0.3)`);
+    console.log(
+      near > 0.5 && far < 0.3
+        ? "  → Semantic retrieval is working ✓"
+        : "  → Scores look off; model may have loaded incorrectly",
+    );
+  } catch (err) {
+    console.log(`Embedder                : FAILED to load — ${String(err).slice(0, 160)}`);
+    console.log("  → Recall falls back to keyword overlap. Fix: npm install @huggingface/transformers");
+  }
+} else {
+  console.log("Embedder                : disabled (EMBEDDINGS=keyword)");
+}
+console.log("\n--- LLM provider ---");
 
 if (config.llmProvider === "anthropic") {
   console.log(apiKey?.trim() ? "Using the Anthropic API. Key is present." : "ERROR: LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty.");

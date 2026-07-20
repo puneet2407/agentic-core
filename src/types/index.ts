@@ -159,7 +159,7 @@ export type SystemEvent =
   | { type: "run.cancelled"; runId: string; reason: string }
   | { type: "run.awaiting_approval"; runId: string }
   | { type: "run.approved"; runId: string }
-  | { type: "llm.call"; runId: string; model: string; latencyMs: number; inputTokens: number; outputTokens: number }
+  | { type: "llm.call"; runId: string; model: string; latencyMs: number; inputTokens: number; outputTokens: number; stepId?: string; agent?: AgentKind }
   | { type: "tool.call"; runId: string; tool: string; ok: boolean; latencyMs: number };
 
 export type EventListener = (event: SystemEvent) => void;

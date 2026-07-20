@@ -45,6 +45,20 @@ export const config = {
     maxTokensPerTask: int("MAX_TOKENS_PER_TASK", 200_000),
     requestTimeoutMs: int("REQUEST_TIMEOUT_MS", 120_000),
     maxStepAttempts: 3,
+    /**
+     * Tool calls one agent may make within a single step. Code exploration on a
+     * real repo needs many reads/searches; too low and agents run out of budget
+     * mid-investigation (they then produce a partial answer, not a failure).
+     */
+    maxToolIterations: int("MAX_TOOL_ITERATIONS", 20),
+    /**
+     * Max simultaneous `claude` CLI subprocesses. Parallel plan steps each make
+     * LLM calls; unbounded spawning trips subscription rate limits and opens the
+     * circuit breaker. Ignored by the API provider (set higher there if desired).
+     */
+    maxConcurrentCliCalls: int("MAX_CONCURRENT_CLI_CALLS", 2),
+    /** Consecutive provider failures before the circuit opens. */
+    breakerThreshold: int("BREAKER_THRESHOLD", 10),
     /** Wall-clock budget for a whole run; exceeded → run fails cleanly. */
     maxRunMs: int("MAX_RUN_MS", 10 * 60_000),
     /** How many times the orchestrator may ask the planner for a revised plan. */

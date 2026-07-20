@@ -25,6 +25,7 @@ import "./observability/audit.js";
  *   POST /tasks/:id/cancel                 → cancel a run (honored at step boundary)
  *   GET  /tasks/:id                        → run status/result
  *   GET  /tasks/:id/events                 → full audit trail for a run
+ *   GET  /tasks/:id/usage                  → token usage, broken down by step & model
  *   GET  /tasks                            → recent runs
  *   GET  /health, /metrics, /catalog       → ops & discovery
  *
@@ -136,6 +137,10 @@ const server = createServer(async (req, res) => {
       return ok
         ? json(res, 202, { runId: id, cancelling: true })
         : json(res, 404, { error: "No active run with that id" });
+    }
+    if (req.method === "GET" && /^\/tasks\/[^/]+\/usage$/.test(path)) {
+      const { getRunUsage } = await import("./observability/usage.js");
+      return json(res, 200, getRunUsage(path.split("/")[2]!));
     }
     if (req.method === "GET" && /^\/tasks\/[^/]+\/events$/.test(path)) {
       const id = path.split("/")[2]!;

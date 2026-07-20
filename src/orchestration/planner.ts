@@ -77,7 +77,7 @@ export async function createPlan(
           messages: [{ role: "user", content: userMessage }],
           maxTokens: 2048,
         },
-        { runId },
+        { runId, stepId: "planner" },
       );
       const json = extractJson(res.text);
       const parsed = planSchema.safeParse(json);
